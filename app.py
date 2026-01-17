@@ -2,196 +2,319 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from prophet import Prophet
 from transformers import pipeline
 import numpy as np
 from datetime import datetime
+from sklearn.linear_model import LinearRegression
 
-# Page Configuration
-st.set_page_config(page_title="JPMC SDT Analyzer", layout="wide", page_icon="📈")
+# --- CONFIGURATION & SETUP ---
+st.set_page_config(page_title="JPMC Strategic Analytics", layout="wide", page_icon="🏦")
 
-# --- DATA EXTRACTION (Sourced from PDF Page 10) ---
-# Hardcoding the data for stability and speed
-data = {
+# --- CUSTOM CSS (Advanced Dark Theme) ---
+st.markdown("""
+<style>
+    /* Global Gradient */
+    .stApp {
+        background: radial-gradient(circle at top left, #1b2838, #0e1117);
+        color: #e6e6e6;
+    }
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #0e1117;
+        border-right: 1px solid #2d333b;
+    }
+    /* Metric Cards */
+    div[data-testid="metric-container"] {
+        background: linear-gradient(135deg, #21262d 0%, #0d1117 100%);
+        border: 1px solid #30363d;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        border-radius: 8px;
+        padding: 10px;
+    }
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #161b22;
+        border-radius: 4px 4px 0px 0px;
+        color: #8b949e;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #238636; /* JPMC Green-ish */
+        color: white;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- HELPER FUNCTIONS ---
+def run_linear_projection(df, years_ahead):
+    """Simple Linear Regression for comparison"""
+    X = df['Year'].values.reshape(-1, 1)
+    y = df['Cumulative_B'].values
+    model = LinearRegression()
+    model.fit(X, y)
+    
+    last_year = df['Year'].max()
+    future_years = np.arange(last_year + 1, last_year + years_ahead + 1).reshape(-1, 1)
+    predictions = model.predict(future_years)
+    
+    return future_years.flatten(), predictions
+
+# --- DATA LOADING ---
+progress_data = {
     'Year': [2021, 2022, 2023, 2024],
     'Annual_Volume_B': [284, 196, 193, 226],
     'Cumulative_B': [284, 480, 673, 900]
 }
-df_progress = pd.DataFrame(data)
+df_progress = pd.DataFrame(progress_data)
 df_progress['Date'] = pd.to_datetime(df_progress['Year'].astype(str) + '-12-31')
 
-# Category breakdown (Page 10)
-categories_2024 = {
+# Detailed Category Data
+df_cat = pd.DataFrame({
     'Category': ['Green', 'Development Finance', 'Community Development'],
-    'Cumulative_Amount_B': [309, 434, 156] # Total 900 (rounded)
-}
-df_cat = pd.DataFrame(categories_2024)
+    'Value': [309, 434, 156],
+    'Parent': ['Achieved', 'Achieved', 'Achieved'],
+    'Color': ['#2ea043', '#d29922', '#58a6ff'] # Green, Yellow, Blue
+})
 
-# --- HEADER ---
-st.title("JPMorgan Chase $2.5T SDT Progress Analyzer")
-st.markdown("""
-**Based on the 2024 Sustainability Report**
-This tool analyzes progress toward the **$2.5 Trillion Sustainable Development Target (SDT)** by 2030. 
-It utilizes time-series forecasting to predict target completion and models the impact of macroeconomic scenarios, such as the AI-driven energy boom.
-""")
-
-st.info(f"**Current Status (End of 2024):** ${df_progress['Cumulative_B'].iloc[-1]} Billion achieved of $2,500 Billion Target (36%)")
-
-# --- TABS ---
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Current Progress", "🔮 2030 Forecast", "⚡ AI Scenario Simulator", "🧠 Semantic Analysis"])
-
-# --- TAB 1: CURRENT PROGRESS ---
-with tab1:
-    col1, col2 = st.columns(2)
+# --- SIDEBAR CONTROLS ---
+with st.sidebar:
+    st.title("🎛️ Risk Controls")
     
-    with col1:
-        st.subheader("Annual Financing Volume")
-        fig_bar = px.bar(df_progress, x='Year', y='Annual_Volume_B', 
-                         title="Annual Financing & Facilitation ($ Billions)",
-                         color_discrete_sequence=['#413a30']) # JPMC-ish brown/slate
-        fig_bar.add_hline(y=250, line_dash="dot", annotation_text="Avg Required to Hit Target", annotation_position="top left")
-        st.plotly_chart(fig_bar, use_container_width=True)
-        st.caption("Data Source: 2024 Sustainability Report, Page 10")
-
-    with col2:
-        st.subheader("Cumulative Composition by Objective")
-        fig_pie = px.pie(df_cat, values='Cumulative_Amount_B', names='Category', 
-                         title="Cumulative Progress (2021-2024)",
-                         color_discrete_sequence=px.colors.sequential.RdBu)
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-# --- TAB 2: FORECASTING (PROPHET) ---
-with tab2:
-    st.subheader("Time Series Forecast: Path to $2.5T")
-    st.markdown("Using **Facebook Prophet** (Logistic Growth) to project progress through 2030 based on 2021-2024 data.")
-
-    # Prepare data for Prophet
-    df_prophet = df_progress[['Date', 'Cumulative_B']].rename(columns={'Date': 'ds', 'Cumulative_B': 'y'})
+    st.subheader("Scenario Parameters")
+    base_growth = st.slider("Base Market CAGR (%)", 0.0, 15.0, 5.0, 0.5)
+    ai_impact = st.slider("AI Infrastructure Alpha (%)", 0.0, 10.0, 2.0, 0.5, help="Additional growth driven by data center financing.")
     
-    # Cap for logistic growth
-    df_prophet['cap'] = 2500 # The Target
-    df_prophet['floor'] = 0
+    st.subheader("Model Settings")
+    show_confidence = st.checkbox("Show Confidence Intervals", value=True)
+    
+    st.divider()
+    
+    # CSV Download Button
+    csv = df_progress.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        "📥 Download Historical Data",
+        csv,
+        "jpmc_sdt_data.csv",
+        "text/csv",
+        key='download-csv'
+    )
 
-    try:
-        m = Prophet(growth='logistic')
-        m.fit(df_prophet)
+# --- MAIN HEADER ---
+col_logo, col_title = st.columns([1, 5])
+with col_title:
+    st.title("JPMorgan Chase: Strategic Capital Analyzer")
+    st.markdown("### Tracking the $2.5 Trillion Sustainable Development Target (SDT)")
+
+# Metrics Row
+current_val = df_progress['Cumulative_B'].iloc[-1]
+target_val = 2500
+gap = target_val - current_val
+run_rate = df_progress['Annual_Volume_B'].mean()
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Cumulative Progress", f"${current_val}B", f"{current_val/target_val:.1%}")
+m2.metric("Remaining Gap", f"${gap:,.0f}B", "To be deployed by 2030")
+m3.metric("2024 Annual Velocity", f"${df_progress['Annual_Volume_B'].iloc[-1]}B", "+17% YoY")
+m4.metric("Avg Run Rate (4-yr)", f"${run_rate:.0f}B", "Historical Average")
+
+# --- TABS LAYOUT ---
+tabs = st.tabs(["🌊 Capital Flow (Sankey)", "📈 Predictive Models", "🔥 Risk Heatmap", "📊 Composition", "🧠 NLP Strategy"])
+
+# === TAB 1: SANKEY DIAGRAM (New) ===
+with tabs[0]:
+    st.subheader("Capital Allocation Flow & Target Gap")
+    st.markdown("Visualizing the flow from the **$2.5T Goal** down to specific allocated categories and the remaining unallocated capital.")
+    
+    # Sankey Logic
+    # Nodes: 0=Target, 1=Achieved, 2=Gap, 3=Green, 4=Dev Fin, 5=Comm Dev
+    
+    fig_sankey = go.Figure(data=[go.Sankey(
+        node = dict(
+            pad = 15,
+            thickness = 20,
+            line = dict(color = "black", width = 0.5),
+            label = ["$2.5T Target", "Achieved Capital ($900B)", "Remaining Gap ($1.6T)", "Green ($309B)", "Dev. Finance ($434B)", "Comm. Dev ($156B)"],
+            color = ["#ffffff", "#2ea043", "#da3633", "#238636", "#d29922", "#58a6ff"]
+        ),
+        link = dict(
+            source = [0, 0, 1, 1, 1], # Indices correspond to labels above
+            target = [1, 2, 3, 4, 5],
+            value =  [900, 1600, 309, 434, 156],
+            color =  ["rgba(46, 160, 67, 0.4)", "rgba(218, 54, 51, 0.2)", "rgba(35, 134, 54, 0.4)", "rgba(210, 153, 34, 0.4)", "rgba(88, 166, 255, 0.4)"]
+        )
+    )])
+    
+    fig_sankey.update_layout(title_text="", font_size=14, height=500, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white")
+    st.plotly_chart(fig_sankey, use_container_width=True)
+
+# === TAB 2: PREDICTIVE MODELING ===
+with tabs[1]:
+    st.subheader("Comparative Forecasting: Linear Trend vs. ML Logistic Growth")
+    
+    col_chart, col_details = st.columns([3, 1])
+    
+    with col_chart:
+        # 1. Linear Model
+        future_years_lin, pred_lin = run_linear_projection(df_progress, 6)
         
-        # Make future dataframe
-        future = m.make_future_dataframe(periods=7, freq='Y')
-        future['cap'] = 2500
-        future['floor'] = 0
+        # 2. Prophet Model (If available)
+        prophet_status = "Available"
+        try:
+            from prophet import Prophet
+            m = Prophet(growth='logistic')
+            df_prophet = df_progress[['Date', 'Cumulative_B']].rename(columns={'Date': 'ds', 'Cumulative_B': 'y'})
+            df_prophet['cap'] = 2500
+            df_prophet['floor'] = 0
+            m.fit(df_prophet)
+            future = m.make_future_dataframe(periods=6, freq='Y')
+            future['cap'] = 2500
+            future['floor'] = 0
+            forecast = m.predict(future)
+            prophet_y = forecast['yhat'].values[-7:] # Get last 7 points including overlap
+            prophet_ds = forecast['ds'].dt.year.values[-7:]
+        except:
+            prophet_status = "Unavailable (C++ missing)"
+            prophet_y = []
+
+        # Plotting
+        fig_models = go.Figure()
         
-        forecast = m.predict(future)
+        # Historical
+        fig_models.add_trace(go.Scatter(x=df_progress['Year'], y=df_progress['Cumulative_B'], 
+                                        mode='lines+markers', name='Historical', 
+                                        line=dict(color='white', width=4)))
         
-        # Visualization
-        fig_forecast = go.Figure()
+        # Linear
+        fig_models.add_trace(go.Scatter(x=future_years_lin, y=pred_lin, 
+                                        mode='lines', name='Linear Projection',
+                                        line=dict(color='#ff7b72', dash='dot')))
         
-        # Historical Data
-        fig_forecast.add_trace(go.Scatter(x=df_prophet['ds'], y=df_prophet['y'], mode='lines+markers', name='Actual', line=dict(color='black', width=3)))
-        
-        # Forecast
-        fig_forecast.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Projected', line=dict(color='blue', dash='dash')))
-        
+        # Prophet
+        if prophet_status == "Available":
+             fig_models.add_trace(go.Scatter(x=prophet_ds, y=prophet_y, 
+                                        mode='lines', name='Prophet (ML) Projection',
+                                        line=dict(color='#2ea043', width=3)))
+             
         # Target Line
-        fig_forecast.add_hline(y=2500, line_color="green", annotation_text="2030 Target ($2.5T)")
+        fig_models.add_hline(y=2500, line_dash="dash", line_color="#58a6ff", annotation_text="Target $2.5T")
         
-        fig_forecast.update_layout(title="Cumulative Progress Forecast vs. Target", yaxis_title="$ Billions", template="plotly_white")
-        st.plotly_chart(fig_forecast, use_container_width=True)
-        
-        # Insight
-        final_proj = forecast['yhat'].iloc[-1]
-        st.write(f"**Model Prediction:** At current trend, the model projects reaching **${final_proj:.0f} Billion** by end of 2030.")
-        if final_proj < 2500:
-            st.warning("⚠️ The current trend suggests falling short of the target. Acceleration in Green or Development Finance is required.")
-        else:
-            st.success("✅ The current trend suggests meeting the target early.")
-            
-    except Exception as e:
-        st.error(f"Error running Prophet (check C++ compiler requirements): {e}")
+        fig_models.update_layout(title="Forecasting Models to 2030", yaxis_title="$ Billions", template="plotly_dark", height=450)
+        st.plotly_chart(fig_models, use_container_width=True)
 
-# --- TAB 3: SCENARIO SIMULATOR ---
-with tab3:
-    st.subheader("Scenario: The Impact of AI & Data Center Energy Demand")
-    st.markdown("""
-    *Context from Report (Page 3 & 23):* Rising energy demand from data centers driven by AI is expected to influence the ability to meet Carbon Intensity targets. 
-    However, for the **SDT (Financing Target)**, this represents a commercial opportunity to finance grid upgrades and new power generation.
-    """)
-    
-    col_sim1, col_sim2 = st.columns([1, 2])
-    
-    with col_sim1:
-        st.markdown("### Adjust Assumptions")
-        base_growth = st.slider("Base Annual Growth (%)", min_value=0, max_value=20, value=5)
-        ai_boost = st.slider("AI Infrastructure Boost (%)", min_value=0, max_value=15, value=0, help="Additional financing volume driven by data center needs.")
-        
-    with col_sim2:
-        # Simple simulation logic
-        current_cum = 900
-        years = range(2025, 2031)
-        sim_data = []
-        
-        # Calculate remaining average needed
-        remaining = 2500 - current_cum
-        avg_needed = remaining / 6
-        
-        cumulative = current_cum
-        # Base line for 2024
-        last_annual = 226 
-        
-        for year in years:
-            total_growth = (base_growth + ai_boost) / 100
-            annual_vol = last_annual * (1 + total_growth)
-            cumulative += annual_vol
-            sim_data.append({'Year': year, 'Cumulative': cumulative, 'Annual': annual_vol})
-            last_annual = annual_vol
-            
-        df_sim = pd.DataFrame(sim_data)
-        
-        fig_sim = go.Figure()
-        fig_sim.add_trace(go.Bar(x=df_sim['Year'], y=df_sim['Cumulative'], name="Simulated Cumulative"))
-        fig_sim.add_hline(y=2500, line_color="red", line_dash="dash", annotation_text="Goal")
-        
-        st.plotly_chart(fig_sim, use_container_width=True)
-        
-        if df_sim['Cumulative'].iloc[-1] >= 2500:
-            st.success(f"Result: Target Met! (${df_sim['Cumulative'].iloc[-1]:,.0f}B)")
-        else:
-            st.error(f"Result: Target Missed. (${df_sim['Cumulative'].iloc[-1]:,.0f}B)")
+    with col_details:
+        st.info(f"**Linear Model**: Assumes growth continues at the exact same straight-line pace as 2021-2024.")
+        st.success(f"**Prophet Model**: Uses logistic growth curves to account for saturation (capping at $2.5T).")
+        st.metric("2030 Estimate (Linear)", f"${pred_lin[-1]:,.0f}B")
+        if prophet_status == "Available":
+            st.metric("2030 Estimate (ML)", f"${prophet_y[-1]:,.0f}B")
 
-# --- TAB 4: NLP ANALYSIS ---
-with tab4:
-    st.subheader("NLP Classification of Report Excerpts")
-    st.markdown("Using a **Zero-Shot Classification** model to categorize key statements from the report regarding risks and strategy.")
+# === TAB 3: RISK HEATMAP (Corrected) ===
+with tabs[2]:
+    st.subheader("Sensitivity Analysis: 2030 Outcome Matrix")
+    st.markdown("How sensitive is the 2030 total to changes in **Base Market Growth** vs. **AI-Driven Demand**?")
     
-    # Excerpts extracted from PDF text
-    excerpts = {
-        "AI Demand": "Rising energy demand from data centers driven by artificial intelligence is expected to influence our ability to meet our Electric Power target.",
-        "Macro Economics": "Geopolitical tensions, diverging global economic growth and heightened interest rate volatility have slowed the pace of financing.",
-        "Methodology": "We plan to continue to evaluate our SDT... and adjust it as we deem necessary, in light of latest climate science.",
-        "Nuclear Energy": "In 2024, we hosted two private dialogues about financing nuclear energy with participants from technology and government."
-    }
+    # Generate Heatmap Data
+    base_rates = np.arange(0, 11, 1) # 0% to 10%
+    ai_rates = np.arange(0, 6, 1)    # 0% to 5%
     
-    selected_excerpt = st.selectbox("Select an Excerpt:", list(excerpts.keys()))
-    text_to_analyze = excerpts[selected_excerpt]
+    z_values = []
     
-    st.blockquote(text_to_analyze)
+    for ai in ai_rates:
+        row = []
+        for base in base_rates:
+            # Simulate to 2030
+            cum = 900
+            last_annual = 226
+            for _ in range(6):
+                growth = (base + ai) / 100
+                last_annual = last_annual * (1 + growth)
+                cum += last_annual
+            row.append(cum)
+        z_values.append(row)
+        
+    fig_heat = go.Figure(data=go.Heatmap(
+        z=z_values,
+        x=base_rates,
+        y=ai_rates,
+        colorscale='RdBu',
+        zmid=2500, # Corrected parameter
+        colorbar=dict(title="2030 Total ($B)")
+    ))
     
-    if st.button("Analyze Text"):
-        with st.spinner("Running Transformer Model..."):
-            classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-            candidate_labels = ["Risk", "Commercial Opportunity", "Governance/Policy", "Strategic Pivot"]
-            
-            result = classifier(text_to_analyze, candidate_labels)
-            
-            # Display results
-            df_nlp = pd.DataFrame({
-                'Label': result['labels'],
-                'Score': result['scores']
-            })
-            
-            fig_nlp = px.bar(df_nlp, x='Score', y='Label', orientation='h', title="Classification Confidence", color='Score')
-            st.plotly_chart(fig_nlp, use_container_width=True)
+    fig_heat.update_layout(
+        title="2030 Forecast Matrix (Target = $2,500B)",
+        xaxis_title="Base Market Growth Rate (%)",
+        yaxis_title="AI Infrastructure Boost (%)",
+        template="plotly_dark",
+        height=500
+    )
+    
+    st.plotly_chart(fig_heat, use_container_width=True)
+    st.caption("Blue areas indicate exceeding the target. Red areas indicate missing the target.")
+
+# === TAB 4: COMPOSITION (Treemap) ===
+with tabs[3]:
+    st.subheader("Portfolio Composition")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        # Treemap
+        fig_tree = px.treemap(df_cat, path=[px.Constant("Achieved $900B"), 'Category'], values='Value',
+                              color='Category', color_discrete_map={
+                                  'Green': '#2ea043', 
+                                  'Development Finance': '#d29922', 
+                                  'Community Development': '#58a6ff'
+                              })
+        fig_tree.update_layout(template="plotly_dark", margin=dict(t=30, l=10, r=10, b=10))
+        st.plotly_chart(fig_tree, use_container_width=True)
+        
+    with c2:
+        # Donut
+        fig_donut = px.pie(df_cat, values='Value', names='Category', hole=0.6, 
+                           title="Allocation Split",
+                           color_discrete_sequence=['#2ea043', '#d29922', '#58a6ff'])
+        fig_donut.update_layout(template="plotly_dark")
+        st.plotly_chart(fig_donut, use_container_width=True)
+
+# === TAB 5: NLP ===
+with tabs[4]:
+    st.subheader("Strategic Text Classifier")
+    
+    col_nlp_input, col_nlp_viz = st.columns([1, 2])
+    
+    with col_nlp_input:
+        excerpts = {
+            "AI Energy Risk": "Rising energy demand from data centers driven by artificial intelligence is expected to influence our ability to meet our Electric Power target.",
+            "Macro Headwinds": "Geopolitical tensions, diverging global economic growth and heightened interest rate volatility have slowed the pace of financing.",
+            "Methodology Update": "We plan to continue to evaluate our SDT... and adjust it as we deem necessary, in light of latest climate science.",
+            "Nuclear Financing": "In 2024, we hosted two private dialogues about financing nuclear energy with participants from technology and government."
+        }
+        selection = st.radio("Choose Statement:", list(excerpts.keys()))
+        txt = excerpts[selection]
+        st.markdown(f"> *{txt}*")
+        
+        run_nlp = st.button("Analyze Statement")
+
+    with col_nlp_viz:
+        if run_nlp:
+            with st.spinner("Processing semantics..."):
+                classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+                labels = ["Financial Risk", "Commercial Opportunity", "Regulatory/Governance", "Technology Shift"]
+                res = classifier(txt, labels)
+                
+                df_res = pd.DataFrame({'Label': res['labels'], 'Confidence': res['scores']})
+                
+                fig_bar = px.bar(df_res, y='Label', x='Confidence', orientation='h', 
+                                 text_auto='.1%', color='Confidence', color_continuous_scale='Greens')
+                fig_bar.update_layout(template="plotly_dark", title="Topic Classification Probability")
+                st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("Select a statement and click 'Analyze' to see NLP model results.")
 
 # --- FOOTER ---
 st.markdown("---")
-st.caption("Developed for Portfolio Demonstration. Data extracted from JPMorgan Chase 2024 Sustainability Report PDF.")
+st.markdown("<h5 style='text-align: center; color: #8b949e;'>Portfolio Analyzer | J.P. Morgan Chase Sustainability Data 2024 | Created by Ankit Kumar</h5>", unsafe_allow_html=True)
